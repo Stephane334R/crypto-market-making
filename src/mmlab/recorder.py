@@ -1,0 +1,130 @@
+"""Live market data recorder for Hyperliquid (L2 order book + trades).
+
+Writes raw websocket messages, stamped with the local receive time, into
+hourly gzipped JSON-lines files:
+
+    data/raw/<COIN>/<YYYYMMDD_HH>.jsonl.gz
+
+Each line: {"recv_ts": <ms>, "msg": <raw message>}
+
+Run it on a small always-on VM (a cheap GCP e2-micro is enough) for a few
+weeks before running the backtests on real data:
+
+    python -m mmlab.recorder --coins BTC ETH --out data/raw
+
+Notes
+-----
+* Hyperliquid pushes a full L2 snapshot (top levels per side) on each
+  `l2Book` update, so no incremental book reconstruction is needed.
+* The server drops idle connections, so we send an application-level ping.
+* Raw messages are stored untouched; parsing happens in `mmlab.data`, so a
+  parsing bug never costs you recorded data.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import gzip
+import json
+import logging
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import websockets
+
+WS_URL = "wss://api.hyperliquid.xyz/ws"
+PING_EVERY_S = 30
+
+log = logging.getLogger("recorder")
+
+
+class HourlyWriter:
+    """Append lines to one gzip file per coin per UTC hour."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self._files: dict[str, tuple[str, gzip.GzipFile]] = {}
+
+    def write(self, coin: str, record: dict) -> None:
+        hour = datetime.now(timezone.utc).strftime("%Y%m%d_%H")
+        current = self._files.get(coin)
+        if current is None or current[0] != hour:
+            if current is not None:
+                current[1].close()
+            path = self.root / coin / f"{hour}.jsonl.gz"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._files[coin] = (hour, gzip.open(path, "at"))
+            log.info("writing %s", path)
+        self._files[coin][1].write(json.dumps(record, separators=(",", ":")) + "\n")
+
+    def close(self) -> None:
+        for _, f in self._files.values():
+            f.close()
+        self._files.clear()
+
+
+def _coin_of(msg: dict) -> str | None:
+    channel = msg.get("channel")
+    data = msg.get("data")
+    if channel == "l2Book" and isinstance(data, dict):
+        return data.get("coin")
+    if channel == "trades" and isinstance(data, list) and data:
+        return data[0].get("coin")
+    return None
+
+
+async def _pinger(ws) -> None:
+    while True:
+        await asyncio.sleep(PING_EVERY_S)
+        await ws.send(json.dumps({"method": "ping"}))
+
+
+async def record(coins: list[str], out: Path) -> None:
+    writer = HourlyWriter(out)
+    backoff = 1.0
+    try:
+        while True:
+            try:
+                async with websockets.connect(WS_URL, max_size=2**23) as ws:
+                    for coin in coins:
+                        for sub_type in ("l2Book", "trades"):
+                            await ws.send(json.dumps({
+                                "method": "subscribe",
+                                "subscription": {"type": sub_type, "coin": coin},
+                            }))
+                    log.info("subscribed to %s", coins)
+                    backoff = 1.0
+                    pinger = asyncio.create_task(_pinger(ws))
+                    try:
+                        async for raw in ws:
+                            recv_ts = int(time.time() * 1000)
+                            msg = json.loads(raw)
+                            coin = _coin_of(msg)
+                            if coin is None:  # pong, subscription acks, etc.
+                                continue
+                            writer.write(coin, {"recv_ts": recv_ts, "msg": msg})
+                    finally:
+                        pinger.cancel()
+            except (websockets.ConnectionClosed, OSError) as exc:
+                log.warning("connection lost (%s); reconnecting in %.0fs", exc, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
+    finally:
+        writer.close()
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--coins", nargs="+", default=["BTC"])
+    p.add_argument("--out", type=Path, default=Path("data/raw"))
+    args = p.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    try:
+        asyncio.run(record(args.coins, args.out))
+    except KeyboardInterrupt:
+        log.info("stopped")
+
+
+if __name__ == "__main__":
+    main()
