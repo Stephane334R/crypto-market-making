@@ -87,7 +87,7 @@ def markout_curve(curve: pd.DataFrame, path: Path) -> None:
 
 
 def sweep_heatmap(table: pd.DataFrame, value: str, path: Path) -> None:
-    pivot = table.pivot(index="skew_bps_at_max", columns="min_half_spread_bps", values=value)
+    pivot = table.pivot(index="skew_ticks_at_max", columns="min_half_spread_ticks", values=value)
     fig, ax = plt.subplots(figsize=(6.5, 4), facecolor=SURFACE)
     lim = max(abs(pivot.min().min()), abs(pivot.max().max())) or 1
     im = ax.imshow(pivot.values, cmap="RdBu", vmin=-lim, vmax=lim, aspect="auto", origin="lower")
@@ -96,8 +96,8 @@ def sweep_heatmap(table: pd.DataFrame, value: str, path: Path) -> None:
     for i in range(pivot.shape[0]):
         for j in range(pivot.shape[1]):
             ax.text(j, i, f"{pivot.values[i, j]:.0f}", ha="center", va="center", fontsize=8, color=INK)
-    ax.set_xlabel("min half-spread (bps)", color=INK2, fontsize=9)
-    ax.set_ylabel("skew at max inventory (bps)", color=INK2, fontsize=9)
+    ax.set_xlabel("min half-spread (ticks)", color=INK2, fontsize=9)
+    ax.set_ylabel("skew at max inventory (ticks)", color=INK2, fontsize=9)
     ax.set_title(f"Parameter sweep: {value}", loc="left", fontsize=11, color=INK, fontweight="bold")
     ax.tick_params(colors=MUTED, labelsize=8)
     fig.colorbar(im, ax=ax, shrink=0.8)

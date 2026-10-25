@@ -12,6 +12,12 @@ your write-up):
   the book at activation time is rejected (post-only / ALO behaviour).
 * Our orders have no market impact: the recorded tape does not react to us.
   This flatters results, especially with large sizes.
+* Inventory can exceed `max_inventory` by up to one `order_size`. A quote is
+  sized against the inventory known at DECISION time, but it goes live one
+  latency hop later, and a resting order fills whether or not we have since
+  breached our own limit. The overshoot is exactly zero at `latency_ms=0` and
+  exactly one `order_size` otherwise, so read `max_abs_inventory` as
+  `max_inventory + order_size`, and size `order_size` accordingly.
 
 Accounting identity (checked in tests), everything marked to mid:
 

@@ -80,8 +80,24 @@ def test_markout_sign():
     assert mo["h_2s"].iloc[0] == pytest.approx(6 / 98 * 1e4)
 
 
-def test_inventory_limit_respected():
+def test_inventory_limit_respected_exactly_without_latency():
     book, trades = generate(SyntheticConfig(hours=0.5, seed=3))
     p = QuoterParams(max_inventory=0.05, order_size=0.02)
-    res = run(book, trades, InventorySkewQuoter(p), SimConfig())
+    res = run(book, trades, InventorySkewQuoter(p), SimConfig(latency_ms=0))
     assert res.states["inventory"].abs().max() <= p.max_inventory + 1e-9
+
+
+def test_inventory_overshoot_is_bounded_by_one_order_size():
+    """With latency, a quote is sized on stale inventory and still fills.
+
+    The quoter caps size using the inventory it knew when it decided; by the
+    time the order is live, an earlier quote may already have filled. A resting
+    order is not cancelled because we breached our own limit, so the breach is
+    real -- but it is bounded by the one order that was in flight.
+    """
+    book, trades = generate(SyntheticConfig(hours=0.5, seed=3))
+    p = QuoterParams(max_inventory=0.05, order_size=0.02)
+    res = run(book, trades, InventorySkewQuoter(p), SimConfig(latency_ms=50))
+    peak = res.states["inventory"].abs().max()
+    assert peak > p.max_inventory                                  # the breach is real
+    assert peak <= p.max_inventory + p.order_size + 1e-9           # and bounded

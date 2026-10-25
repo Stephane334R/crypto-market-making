@@ -67,6 +67,23 @@ def clean_trades(trades: pd.DataFrame) -> pd.DataFrame:
     return trades.sort_values("ts", kind="stable").reset_index(drop=True)
 
 
+def infer_tick(book: pd.DataFrame) -> float:
+    """Smallest price increment actually observed in the book.
+
+    Hyperliquid quotes to at most 5 significant figures, so the tick depends on
+    the coin's price level ($1 for BTC near $80k, $0.1 for ETH near $2.3k).
+    Guessing it wrong rescales every spread parameter, so infer it from the data
+    rather than passing a default. Floats coming out of JSON carry noise
+    (0.1 arrives as 0.09999999999990905), hence the rounding.
+    """
+    px = np.unique(np.concatenate([book["bid_px"].to_numpy(), book["ask_px"].to_numpy()]))
+    diffs = np.diff(np.sort(px))
+    diffs = diffs[diffs > 1e-12]
+    if not len(diffs):
+        raise ValueError("cannot infer tick: fewer than two distinct prices in the book")
+    return float(f"{diffs.min():.6g}")
+
+
 def check_trade_side_convention(book: pd.DataFrame, trades: pd.DataFrame) -> float:
     """Share of buyer-initiated trades printing at or above the prevailing mid.
 
@@ -99,6 +116,8 @@ def main() -> None:
     book.to_parquet(args.out / "book.parquet", index=False)
     trades.to_parquet(args.out / "trades.parquet", index=False)
     log.info("book rows: %d  trade rows: %d", len(book), len(trades))
+    log.info("inferred tick: %g  (median spread: %g ticks)", infer_tick(book),
+             float((book["ask_px"] - book["bid_px"]).median()) / infer_tick(book))
     log.info("side convention check (should be ~1.0): %.3f", check_trade_side_convention(book, trades))
 
 
